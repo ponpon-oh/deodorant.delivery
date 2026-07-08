@@ -1142,11 +1142,12 @@ function renderOrderHistory(){
 function renderInventory(){
   const el=document.getElementById('inventoryView');
   if(!state.products.length){ el.innerHTML='<div class="empty">商品がありません</div>'; return; }
-  el.innerHTML=[...state.products].sort(jaSort).map(p=>{
+  var _setNames=new Set(state.sets.map(function(s){return s.name.replace(/\s/g,'');}));
+  el.innerHTML=[...state.products].filter(function(p){return !_setNames.has(p.name.replace(/\s/g,''));}).sort(jaSort).map(p=>{
     const lots=state.lots.filter(l=>l.productId===p.id&&(availOf(l)>0||pendOfLot(l)>0)).sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:a.seq-b.seq);
     const total=stockOf(p.id); const value=invValueOf(p.id); const pend=pendingOf(p.id);
     return `<div style="border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:10px">
-      <div class="flex-between"><b>${esc(p.name)}</b><span>在庫 <b>${total}個</b> ／ 評価額 ${yen(value)} ${pend?`<span class="pill a">未到着 ${pend}</span>`:''}</span></div>
+      <div class="flex-between"><b>${esc(p.name)}</b><span>在庫 <b style="font-size:2em;color:var(--brand);vertical-align:-2px">${total}</b>個 ／ 評価額 ${yen(value)} ${pend?`<span class="pill a">未到着 ${pend}</span>`:''}</span></div>
       ${lots.length?`<table style="margin-top:8px"><thead><tr><th>仕入日</th><th class="num">在庫</th><th class="num">未到着</th><th class="num">単価/個</th><th class="num">在庫額</th></tr></thead>
         <tbody>${lots.map(l=>`<tr style="${availOf(l)>0?'':'opacity:.5'}"><td>${l.date}</td><td class="num">${Math.max(0,availOf(l))}</td>
           <td class="num">${pendOfLot(l)?`<span class="pill a">${pendOfLot(l)}</span>`:'0'}</td><td class="num">${yen(l.unitCost)}</td><td class="num">${yen(Math.max(0,availOf(l))*l.unitCost)}</td></tr>`).join('')}</tbody></table>`
@@ -1260,16 +1261,20 @@ function importSalesCsv(ev){ _readCsv(ev, function(txt){
   if(rows.length && /商品|品名|販路|価格|個数|数量|channel|name/i.test(rows[0].join(''))) rows=rows.slice(1);
   let n=0, short=0;
   rows.forEach(function(r){ const nm=String(r[0]||'').trim(); const cn=String(r[1]||'').trim(); const price=_num(r[2]); let qty=Math.round(_num(r[3])); if(!qty) qty=1; if(!nm) return;
-    const p=ensureProduct(nm); const ch=cn?ensureChannel(cn):null;
-    let nd=qty, cogs=0, consumed=[], shortHit=false;
-    const lots=state.lots.filter(x=>x.productId===p.id&&availOf(x)>0).sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:a.seq-b.seq);
-    for(const lot of lots){ if(nd<=0)break; const t=Math.min(nd,availOf(lot)); lot.soldQty+=t; nd-=t; cogs+=t*lot.unitCost; consumed.push({lotId:lot.id,qty:t,unitCost:lot.unitCost}); }
-    if(nd>0){ shortHit=true; cogs+=nd*guessUnitCost(p.id); }
+    const ch=cn?ensureChannel(cn):null;
+    let sel=null; { var _s=state.sets.find(function(x){return x.name.replace(/\s/g,'')===nm.replace(/\s/g,'');}); if(_s){ sel={id:_s.id,name:_s.name,type:'set',components:_s.components}; } else { sel=findSellByName(nm); } }
+    if(!sel){ const p=ensureProduct(nm); sel={id:p.id,name:p.name,type:'product',components:[{productId:p.id,qty:1}]}; }
+    let cogs=0, consumed=[], shortHit=false;
+    sel.components.forEach(function(cmp){ let nd=cmp.qty*qty;
+      const lots=state.lots.filter(x=>x.productId===cmp.productId&&availOf(x)>0).sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:a.seq-b.seq);
+      for(const lot of lots){ if(nd<=0)break; const t=Math.min(nd,availOf(lot)); lot.soldQty+=t; nd-=t; cogs+=t*lot.unitCost; consumed.push({lotId:lot.id,qty:t,unitCost:lot.unitCost}); }
+      if(nd>0){ shortHit=true; cogs+=nd*guessUnitCost(cmp.productId); }
+    });
     if(shortHit) short++;
     const revenue=price*qty;
     let fee=ch?(ch.feeType==='percent'?revenue*ch.feeValue/100:ch.feeValue):0;
     const shipCost=(ch&&ch.defaultShippingId)?((shippingById(ch.defaultShippingId)||{}).cost||0):0;
-    state.outbounds.push({id:uid(),date:todayISO(),sellableId:p.id,sellableName:p.name,qty:qty,channelId:ch?ch.id:null,shippingId:(ch&&ch.defaultShippingId)||null,salePrice:price,revenue:revenue,cogs:cogs,fee:fee,shipping:shipCost,profit:revenue-cogs-fee-shipCost,consumed:consumed});
+    state.outbounds.push({id:uid(),date:todayISO(),sellableId:sel.id,sellableName:sel.name,qty:qty,channelId:ch?ch.id:null,shippingId:(ch&&ch.defaultShippingId)||null,salePrice:price,revenue:revenue,cogs:cogs,fee:fee,shipping:shipCost,profit:revenue-cogs-fee-shipCost,consumed:consumed});
     n++;
   });
   save(); renderAll(); setImpSt('✅ 販売 '+n+'件を取り込みました（先入先出で原価計算'+(short?('／うち '+short+'件は在庫不足で推定原価'):'')+'）。');
