@@ -557,9 +557,13 @@ const jaSort=(a,b)=>a.name.localeCompare(b.name,'ja');
 
 /* sellables = base products (aiueo) + sets (aiueo) */
 function sellables(){
-  const base=state.products.map(p=>({id:p.id,name:p.name,type:'product',components:[{productId:p.id,qty:1}]})).sort(jaSort);
-  const sets=state.sets.map(s=>({id:s.id,name:s.name,type:'set',components:s.components})).sort(jaSort);
+  const base=state.products.map(p=>({id:p.id,name:p.name,type:'product',components:[{productId:p.id,qty:1}],paused:!!p.paused})).sort(jaSort);
+  const sets=state.sets.map(s=>({id:s.id,name:s.name,type:'set',components:s.components,paused:!!s.paused})).sort(jaSort);
   return [...base,...sets];
+}
+function togglePause(id){
+  var p=state.products.find(function(x){return x.id===id;}); if(p){ p.paused=!p.paused; save(); renderAll(); return; }
+  var s=state.sets.find(function(x){return x.id===id;}); if(s){ s.paused=!s.paused; save(); renderAll(); return; }
 }
 const sellableById=id=>sellables().find(s=>s.id===id);
 function sellableName(id){ const s=sellableById(id); return s?s.name:'(削除済)'; }
@@ -640,7 +644,7 @@ function renderShippings(){
 }
 
 /* ================= Sales Master: Sets ================= */
-function productOptions(sel){ return [...state.products].sort(jaSort).map(p=>`<option value="${p.id}" ${p.id===sel?'selected':''}>${esc(p.name)}</option>`).join(''); }
+function productOptions(sel, activeOnly){ var ps=[...state.products].sort(jaSort); if(activeOnly) ps=ps.filter(function(p){return !p.paused;}); return ps.map(p=>`<option value="${p.id}" ${p.id===sel?'selected':''}>${esc(p.name)}</option>`).join(''); }
 function addSetComp(pid='',qty=1){
   const tb=document.getElementById('setComps');
   const tr=document.createElement('tr');
@@ -673,9 +677,11 @@ function renderPriceGrid(){
   const el=document.getElementById('priceGrid');
   const sel=sellables();
   if(!sel.length||!state.channels.length){ el.innerHTML='<div class="empty">商品または販路がありません（商品マスタ・設定で登録してください）</div>'; return; }
-  el.innerHTML=`<table style="min-width:${300+state.channels.length*150}px"><thead><tr><th>販売単位</th><th class="num">1個の在庫評価額</th>${state.channels.map(c=>`<th class="num">${esc(c.name)}<br><span class="tag">価格 / 目安利益</span></th>`).join('')}</tr></thead>
-    <tbody>${sel.map(s=>{ const cost=sellableCost(s);
-      return `<tr><td>${esc(s.name)}${s.type==='set'?' <span class="pill b">セット</span>':''}</td>
+  el.innerHTML=`<table style="min-width:${380+state.channels.length*150}px"><thead><tr><th>状態</th><th>販売単位</th><th class="num">1個の在庫評価額</th>${state.channels.map(c=>`<th class="num">${esc(c.name)}<br><span class="tag">価格 / 目安利益</span></th>`).join('')}</tr></thead>
+    <tbody>${sel.map(s=>{ const cost=sellableCost(s); const paused=!!s.paused;
+      return `<tr style="${paused?'opacity:.6;background:#fafafa':''}">
+      <td><button class="btn ${paused?'green':'ghost'} sm" onclick="togglePause('${s.id}')">${paused?'▶ 再開':'⏸ 休品'}</button></td>
+      <td>${esc(s.name)}${s.type==='set'?' <span class="pill b">セット</span>':''}${paused?' <span class="pill r">休品</span>':''}</td>
       <td class="num">${yen(cost)}</td>
       ${state.channels.map(c=>{ const pr=getPrice(c.id,s.id); const m=estProfit(c,pr,cost);
         return `<td class="num"><input type="number" min="0" style="width:96px" class="pg" data-cid="${c.id}" data-sid="${s.id}" data-cost="${cost}" value="${pr}" oninput="pgMargin(this)"><div class="pg-m" style="font-size:11px;margin-top:3px;font-weight:700;color:${m>=0?'var(--green)':'var(--red)'}">目安利益 ${yen(m)}</div></td>`; }).join('')}</tr>`; }).join('')}</tbody></table>`;
@@ -719,7 +725,7 @@ function addPurchaseLine(pid='',price='',sku=1,per=1){
   const tb=document.getElementById('purchaseLines');
   const tr=document.createElement('tr');
   tr.innerHTML=`
-    <td><select class="pl-prod" onchange="onPurchaseProdChange(this)"><option value="">選択</option>${productOptions(pid)}</select></td>
+    <td><select class="pl-prod" onchange="onPurchaseProdChange(this)"><option value="">選択</option>${productOptions(pid, true)}</select></td>
     <td class="num"><input type="number" class="pl-price num" min="0" value="${price}" oninput="recalcPurchase()"></td>
     <td class="num"><input type="number" class="pl-sku num" min="1" value="${sku}" oninput="recalcPurchase()"></td>
     <td class="num"><input type="number" class="pl-per num" min="1" value="${per}" oninput="recalcPurchase()"></td>
@@ -994,16 +1000,27 @@ async function syncArrivals(){
 /* ================= Order / Outbound (grid) ================= */
 function renderOrderGrid(){
   const el=document.getElementById('orderGrid');
-  const sel=sellables();
-  if(!sel.length||!state.channels.length){ el.innerHTML='<div class="empty">商品または販路がありません（商品マスタ・設定で登録してください）</div>'; return; }
+  const all=sellables().filter(function(s){return !s.paused;});
+  if(!all.length||!state.channels.length){ el.innerHTML='<div class="empty">商品または販路がありません（商品マスタ・設定で登録してください）</div>'; return; }
+  const prods=all.filter(function(s){return s.type==='product';});
+  const sets=all.filter(function(s){return s.type==='set';});
+  function row(s, cls){ const avail=sellableAvailable(s);
+    return `<tr class="${cls}" ${cls==='ogset'?'style="display:none"':''}><td class="name">${esc(s.name)}${s.type==='set'?' <span class="pill b">セット</span>':''}</td>
+      <td class="num" id="av_${s.id}">${isFinite(avail)?avail:0}</td>
+      ${state.channels.map(c=>`<td><input type="number" min="0" class="og" data-sid="${s.id}" data-cid="${c.id}" placeholder="0" oninput="updateOrderGrid()"></td>`).join('')}</tr>`; }
+  const colspan=2+state.channels.length;
   el.innerHTML=`<table class="grid-tbl" style="min-width:${150+state.channels.length*96}px"><thead><tr>
     <th class="name">販売単位</th><th class="num">在庫</th>${state.channels.map(c=>`<th>${esc(c.name)}</th>`).join('')}</tr></thead>
-    <tbody>${sel.map(s=>{ const avail=sellableAvailable(s);
-      return `<tr><td class="name">${esc(s.name)}${s.type==='set'?' <span class="pill b">セット</span>':''}</td>
-        <td class="num" id="av_${s.id}">${isFinite(avail)?avail:0}</td>
-        ${state.channels.map(c=>`<td><input type="number" min="0" class="og" data-sid="${s.id}" data-cid="${c.id}" placeholder="0" oninput="updateOrderGrid()"></td>`).join('')}</tr>`;
-    }).join('')}</tbody></table>`;
+    <tbody>${prods.map(function(s){return row(s,'');}).join('')}${sets.length?`<tr class="setToggleRow" onclick="toggleGridSets()"><td colspan="${colspan}" style="cursor:pointer;background:#eef2ff;color:var(--brand);font-weight:700;text-align:left">▸ セット商品（${sets.length}）　タップで表示/非表示</td></tr>`:''}${sets.map(function(s){return row(s,'ogset');}).join('')}</tbody></table>`;
   updateOrderGrid();
+}
+function toggleGridSets(){
+  var rows=document.querySelectorAll('#orderGrid tr.ogset');
+  if(!rows.length) return;
+  var show=(rows[0].style.display==='none'||rows[0].style.display==='');
+  rows.forEach(function(r){ r.style.display=show?'table-row':'none'; });
+  var t=document.querySelector('#orderGrid .setToggleRow td');
+  if(t) t.innerHTML=(show?'▾':'▸')+' セット商品（'+rows.length+'）　タップで表示/非表示';
 }
 function readGridLines(){
   const lines=[];
@@ -1139,22 +1156,24 @@ function renderOrderHistory(){
 }
 
 /* ================= Inventory ================= */
+function invBlock(p){
+  var lots=state.lots.filter(function(l){return l.productId===p.id&&(availOf(l)>0||pendOfLot(l)>0);}).sort(function(a,b){return a.date<b.date?-1:a.date>b.date?1:a.seq-b.seq;});
+  var total=stockOf(p.id), value=invValueOf(p.id), pend=pendingOf(p.id);
+  var col=total<=10?'var(--red)':'var(--brand)';
+  var head='<div class="flex-between"><b>'+esc(p.name)+(p.paused?' <span class="pill r">休品</span>':'')+'</b><span>在庫 <b style="font-size:2em;color:'+col+';vertical-align:-2px">'+total+'</b>個 ／ 評価額 '+yen(value)+(pend?' <span class="pill a">未到着 '+pend+'</span>':'')+'</span></div>';
+  var body = lots.length ? ('<details style="margin-top:6px"><summary style="font-size:12px;color:var(--brand)">仕入日ごとの明細（ロット）を表示</summary><table style="margin-top:8px"><thead><tr><th>仕入日</th><th class="num">在庫</th><th class="num">未到着</th><th class="num">単価/個</th><th class="num">在庫額</th></tr></thead><tbody>'+lots.map(function(l){return '<tr style="'+(availOf(l)>0?'':'opacity:.5')+'"><td>'+l.date+'</td><td class="num">'+Math.max(0,availOf(l))+'</td><td class="num">'+(pendOfLot(l)?'<span class="pill a">'+pendOfLot(l)+'</span>':'0')+'</td><td class="num">'+yen(l.unitCost)+'</td><td class="num">'+yen(Math.max(0,availOf(l))*l.unitCost)+'</td></tr>';}).join('')+'</tbody></table></details>') : '<div class="muted" style="margin-top:6px">在庫なし</div>';
+  return '<div style="border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:10px">'+head+body+'</div>';
+}
 function renderInventory(){
-  const el=document.getElementById('inventoryView');
+  var el=document.getElementById('inventoryView');
   if(!state.products.length){ el.innerHTML='<div class="empty">商品がありません</div>'; return; }
   var _setNames=new Set(state.sets.map(function(s){return s.name.replace(/\s/g,'');}));
-  el.innerHTML=[...state.products].filter(function(p){return !_setNames.has(p.name.replace(/\s/g,''));}).sort(jaSort).map(p=>{
-    const lots=state.lots.filter(l=>l.productId===p.id&&(availOf(l)>0||pendOfLot(l)>0)).sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:a.seq-b.seq);
-    const total=stockOf(p.id); const value=invValueOf(p.id); const pend=pendingOf(p.id);
-    return `<div style="border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:10px">
-      <div class="flex-between"><b>${esc(p.name)}</b><span>在庫 <b style="font-size:2em;color:var(--brand);vertical-align:-2px">${total}</b>個 ／ 評価額 ${yen(value)} ${pend?`<span class="pill a">未到着 ${pend}</span>`:''}</span></div>
-      ${lots.length?`<table style="margin-top:8px"><thead><tr><th>仕入日</th><th class="num">在庫</th><th class="num">未到着</th><th class="num">単価/個</th><th class="num">在庫額</th></tr></thead>
-        <tbody>${lots.map(l=>`<tr style="${availOf(l)>0?'':'opacity:.5'}"><td>${l.date}</td><td class="num">${Math.max(0,availOf(l))}</td>
-          <td class="num">${pendOfLot(l)?`<span class="pill a">${pendOfLot(l)}</span>`:'0'}</td><td class="num">${yen(l.unitCost)}</td><td class="num">${yen(Math.max(0,availOf(l))*l.unitCost)}</td></tr>`).join('')}</tbody></table>`
-        :'<div class="muted" style="margin-top:6px">在庫なし</div>'}
-    </div>`;
-  }).join('');
-  const sv=document.getElementById('setStockView');
+  var visible=[...state.products].filter(function(p){return !_setNames.has(p.name.replace(/\s/g,''));}).sort(jaSort);
+  var active=visible.filter(function(p){return !p.paused;});
+  var paused=visible.filter(function(p){return p.paused;});
+  el.innerHTML=(active.length?active.map(invBlock).join(''):'<div class="empty">表示できる商品がありません</div>')
+    + (paused.length?('<details style="margin-top:12px"><summary style="font-weight:700;color:var(--sub)">🛑 休品の商品（'+paused.length+'）を表示</summary><div style="margin-top:8px">'+paused.map(invBlock).join('')+'</div></details>'):'');
+  var sv=document.getElementById('setStockView');
   sv.innerHTML=state.sets.length? `<table><thead><tr><th>セット</th><th>構成</th><th class="num">作成可能数</th></tr></thead>
     <tbody>${[...state.sets].sort(jaSort).map(s=>{ const avail=Math.min(...s.components.map(c=>Math.floor(stockOf(c.productId)/c.qty)));
       return `<tr><td><b>${esc(s.name)}</b></td><td>${s.components.map(c=>`<span class="chip">${esc(productName(c.productId))}×${c.qty}</span>`).join('')}</td><td class="num">${isFinite(avail)?avail:0} セット</td></tr>`; }).join('')}</tbody></table>`
