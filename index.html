@@ -117,7 +117,7 @@
   <!-- ===================== DASHBOARD ===================== -->
   <section id="dash" class="tab active">
     <div class="hero">
-      <div class="k">粗利合計（売上 − 販売手数料 − 送料 − 仕入原価）</div>
+      <div class="k">累計利益（売上 − 販売手数料 − 送料 − 仕入原価）</div>
       <div class="v" id="heroProfit">¥0</div>
       <div class="sub" id="heroSub"></div>
     </div>
@@ -1058,7 +1058,7 @@ function buildLineMatrix(lines,date){
   const all=[header,...rows];
   const w=header.map((_,c)=>Math.max(...all.map(r=>strWidth(r[c]))));
   const pad=(s,width)=>s+' '.repeat(Math.max(0,width-strWidth(s)));
-  const fmt=r=>r.map((c,i)=>pad(c,w[i])).join(' | ');
+  const fmt=r=>r.map((c,i)=>pad(c,w[i])).join('・');
   const sep='-'.repeat(strWidth(fmt(header)));
   return `発注依頼\n日付: ${date}\n\n${fmt(header)}\n${sep}\n${rows.map(fmt).join('\n')}`;
 }
@@ -1161,7 +1161,7 @@ function invBlock(p){
   var lots=state.lots.filter(function(l){return l.productId===p.id&&(availOf(l)>0||pendOfLot(l)>0);}).sort(function(a,b){return a.date<b.date?-1:a.date>b.date?1:a.seq-b.seq;});
   var total=stockOf(p.id), value=invValueOf(p.id), pend=pendingOf(p.id);
   var col=total<=10?'var(--red)':'var(--brand)';
-  var head='<div class="flex-between"><b>'+esc(p.name)+(p.paused?' <span class="pill r">休品</span>':'')+'</b><span>在庫 <b style="font-size:2em;color:'+col+';vertical-align:-2px">'+total+'</b>個 ／ 評価額 '+yen(value)+(pend?' <span class="pill a">未到着 '+pend+'</span>':'')+'</span></div>';
+  var head='<div class="flex-between"><b>'+esc(p.name)+(p.paused?' <span class="pill r">休品</span>':'')+'</b><span>在庫 <b style="font-size:2em;color:'+col+';vertical-align:-2px">'+total+'</b>個 ／ 1個あたり評価額 '+yen(total>0?value/total:0)+(pend?' <span class="pill a">未到着 '+pend+'</span>':'')+'</span></div>';
   var body = lots.length ? ('<details style="margin-top:6px"><summary style="font-size:12px;color:var(--brand)">仕入日ごとの明細（ロット）を表示</summary><table style="margin-top:8px"><thead><tr><th>仕入日</th><th class="num">在庫</th><th class="num">未到着</th><th class="num">単価/個</th><th class="num">在庫額</th></tr></thead><tbody>'+lots.map(function(l){return '<tr style="'+(availOf(l)>0?'':'opacity:.5')+'"><td>'+l.date+'</td><td class="num">'+Math.max(0,availOf(l))+'</td><td class="num">'+(pendOfLot(l)?'<span class="pill a">'+pendOfLot(l)+'</span>':'0')+'</td><td class="num">'+yen(l.unitCost)+'</td><td class="num">'+yen(Math.max(0,availOf(l))*l.unitCost)+'</td></tr>';}).join('')+'</tbody></table></details>') : '<div class="muted" style="margin-top:6px">在庫なし</div>';
   return '<div style="border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:10px">'+head+body+'</div>';
 }
@@ -1197,9 +1197,9 @@ function renderDashboard(){
   document.getElementById('dashStats').innerHTML=`
     <div class="box"><div class="k">累計売上金額</div><div class="v" style="color:var(--brand)">${yen(revenue)}</div></div>
     <div class="box"><div class="k">累計売上個数</div><div class="v">${qty}<span style="font-size:13px"> 個</span></div></div>
-    <div class="box"><div class="k">利益率（粗利 / 売上）</div><div class="v" style="color:${marginRate>=0?'var(--green)':'var(--red)'}">${marginRate.toFixed(1)}%</div></div>`;
+    <div class="box"><div class="k">利益率（累計利益 / 累計売上）</div><div class="v" style="color:${marginRate>=0?'var(--green)':'var(--red)'}">${marginRate.toFixed(1)}%</div></div>`;
   document.getElementById('dashMini').innerHTML=`
-    <div class="box"><div class="k">利益（粗利 − 在庫評価額）</div><div class="v" style="color:${profit>=0?'var(--green)':'var(--red)'}">${yen(profit)}</div></div>`;
+    <div class="box"><div class="k">累計キャッシュフロー（累計利益 − 在庫評価額）</div><div class="v" style="color:${profit>=0?'var(--green)':'var(--red)'}">${yen(profit)}</div></div>`;
 
   document.getElementById('dashMonthly').innerHTML=monthlyChart();
 
