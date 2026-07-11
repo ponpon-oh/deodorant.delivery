@@ -408,10 +408,17 @@ function doGet(e){
 
 function doPost(e){
   var data = (e && e.parameter && e.parameter.data) || '';
-  var rev = (e && e.parameter && e.parameter.rev) || Date.now();
+  var force = (e && e.parameter && e.parameter.force) === '1';
+  var baseRev = Number((e && e.parameter && e.parameter.baseRev) || 0);
   var f = _getFile();
-  f.setContent(JSON.stringify({ rev: Number(rev), data: data }));
-  return ContentService.createTextOutput('OK');
+  var cur; try { cur = JSON.parse(f.getBlob().getDataAsString()); } catch (err) { cur = { rev:0, data:'' }; }
+  var curRev = Number(cur.rev || 0);
+  if (force || curRev === 0 || baseRev === curRev) {
+    var newRev = Date.now(); // サーバー時計で版番号を採番（端末の時計ズレを排除）
+    f.setContent(JSON.stringify({ rev: newRev, data: data }));
+    return ContentService.createTextOutput(JSON.stringify({ ok:true, rev:newRev }));
+  }
+  return ContentService.createTextOutput(JSON.stringify({ ok:false, rev:curRev })); // 古い版に基づく書込は拒否（巻き戻り防止）
 }</pre>
         <button class="btn ghost sm" style="margin-top:6px" onclick="copyCloudCode()">コードをコピー</button>
       </details>
@@ -536,7 +543,7 @@ function load(){
   try{ const s=JSON.parse(localStorage.getItem(KEY)); if(s){ s.prices=s.prices||{}; s.sets=Array.isArray(s.sets)?s.sets:[]; s.arrivals=s.arrivals||[]; s.appliedKeys=s.appliedKeys||{}; s.gfUrl=s.gfUrl||''; s.autoSync=s.autoSync||false; s.useProxy=(s.useProxy!==undefined)?s.useProxy:true; s.lineRelayUrl=s.lineRelayUrl||''; s.gasArrivalUrl=s.gasArrivalUrl||''; s.adjustments=s.adjustments||[]; s.lineMode=s.lineMode||'share'; s.cloudUrl=s.cloudUrl||''; s.rev=s.rev||0; return s; } }catch(e){}
   return { products:[], channels:[], shippings:[], lots:[], purchases:[], outbounds:[], sets:[], arrivals:[], appliedKeys:{}, prices:{}, gfUrl:'', autoSync:false, useProxy:true, lineRelayUrl:'', gasArrivalUrl:'', adjustments:[], lineMode:'share', cloudUrl:'', rev:0 };
 }
-function save(){ localStorage.setItem(KEY, JSON.stringify(state)); schedulePush(); }
+function save(){ localStorage.setItem(KEY, JSON.stringify(state)); _cloudDirty=true; schedulePush(); }
 
 /* ================= Helpers ================= */
 const productName=id=>(state.products.find(p=>p.id===id)||{}).name||'(削除済)';
@@ -1188,7 +1195,8 @@ function renderDashboard(){
   const qty=state.outbounds.reduce((a,o)=>a+o.qty,0);                // 累計販売数量
   const invValue=totalInvValue();                                    // 在庫評価額（表示はしないが計算に使用）
   const profit=gross-invValue;                                       // 利益 = 粗利 - 在庫評価額
-  const marginRate=revenue>0?gross/revenue*100:0;                    // 利益率 = 粗利 / 売上
+  const grossR=Math.round(gross), revenueR=Math.round(revenue);
+  const marginRate=revenueR>0?grossR/revenueR*100:0;                 // 利益率 = 累計利益(丸め) / 累計売上(丸め)
 
   document.getElementById('heroProfit').textContent=yen(gross);
   document.getElementById('heroProfit').style.color=gross>=0?'#fff':'#fecaca';
@@ -1197,7 +1205,7 @@ function renderDashboard(){
   document.getElementById('dashStats').innerHTML=`
     <div class="box"><div class="k">累計売上金額</div><div class="v" style="color:var(--brand)">${yen(revenue)}</div></div>
     <div class="box"><div class="k">累計売上個数</div><div class="v">${qty}<span style="font-size:13px"> 個</span></div></div>
-    <div class="box"><div class="k">利益率（累計利益 / 累計売上）</div><div class="v" style="color:${marginRate>=0?'var(--green)':'var(--red)'}">${marginRate.toFixed(1)}%</div></div>`;
+    <div class="box"><div class="k">利益率（累計利益 / 累計売上）</div><div class="v" style="color:${marginRate>=0?'var(--green)':'var(--red)'}">${marginRate.toFixed(1)}%</div><div class="tag" style="margin-top:2px">${yen(grossR)} ÷ ${yen(revenueR)}</div></div>`;
   document.getElementById('dashMini').innerHTML=`
     <div class="box"><div class="k">累計キャッシュフロー（累計利益 − 在庫評価額）</div><div class="v" style="color:${profit>=0?'var(--green)':'var(--red)'}">${yen(profit)}</div></div>`;
 
@@ -1371,7 +1379,7 @@ function renderAdjust(){
     : '<div class="empty">在庫調整の履歴はありません（棚卸で減らした分は出荷履歴に入ります）</div>';
 }
 /* ====== Team cloud sync (Apps Script + Drive, JSONP read / no-cors write) ====== */
-var _cloudPushTimer=null, _cloudPollStarted=false;
+var _cloudPushTimer=null, _cloudPollStarted=false, _cloudDirty=false, _cloudVerifyTimer=null;
 function cloudEnabled(){ return !!(state.cloudUrl && String(state.cloudUrl).trim()); }
 function copyCloudCode(){ var t=document.getElementById('cloudCode').innerText; if(navigator.clipboard){ navigator.clipboard.writeText(t).then(function(){alert('コードをコピーしました');}).catch(function(){alert('コピーできませんでした。手動で選択してください。');}); } else alert('手動で選択してコピーしてください。'); }
 function saveCloudUrl(){
@@ -1383,40 +1391,51 @@ function saveCloudUrl(){
 }
 function startCloudPoll(){ if(_cloudPollStarted) return; _cloudPollStarted=true; setInterval(function(){ if(cloudEnabled()) pullCloud(false); }, 15000); }
 function schedulePush(){ if(!cloudEnabled()) return; if(_cloudPushTimer) clearTimeout(_cloudPushTimer); _cloudPushTimer=setTimeout(pushCloud, 1200); }
-function pushCloud(){
+function pushCloud(force){
   if(!cloudEnabled()) return;
-  state.rev=Date.now();
   var st=document.getElementById('cloudStatus');
-  var body='action=save&rev='+state.rev+'&data='+encodeURIComponent(JSON.stringify(state));
+  var base = force ? 'force=1' : ('baseRev='+(state.rev||0));
+  var body='action=save&'+base+'&data='+encodeURIComponent(JSON.stringify(state));
+  _cloudDirty=false;
   try{
     fetch(state.cloudUrl, {method:'POST', mode:'no-cors', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:body});
-    if(st) st.textContent='☁️ クラウドに保存しました（'+new Date().toLocaleTimeString('ja-JP')+'）';
+    if(st) st.textContent='☁️ 保存を送信（確認中… '+new Date().toLocaleTimeString('ja-JP')+'）';
+    if(_cloudVerifyTimer) clearTimeout(_cloudVerifyTimer);
+    _cloudVerifyTimer=setTimeout(function(){ pullCloud(false, true); }, 2500);
   }catch(e){ if(st) st.textContent='⚠️ クラウド保存に失敗: '+String(e&&e.message||e); }
 }
-function pullCloud(force){
+function pullCloud(force, isVerify){
   if(!cloudEnabled()) return;
   var url=state.cloudUrl, cb='__cloud_cb_'+Date.now()+Math.floor(Math.random()*1000), s=document.createElement('script');
   var st=document.getElementById('cloudStatus');
   function cleanup(){ try{ delete window[cb]; }catch(e){ window[cb]=undefined; } if(s.parentNode) s.parentNode.removeChild(s); }
-  var timer=setTimeout(function(){ cleanup(); if(st) st.textContent='⚠️ クラウド取得に時間がかかっています（URL/デプロイ設定を確認）'; }, 15000);
+  var timer=setTimeout(function(){ cleanup(); if(st&&force) st.textContent='⚠️ クラウド取得に時間がかかっています（URL/デプロイ設定を確認）'; }, 15000);
   window[cb]=function(resp){ clearTimeout(timer); cleanup();
     try{
       if(resp && resp.data){
-        var remote=JSON.parse(resp.data); var rrev=Number(resp.rev||remote.rev||0);
-        if(force || rrev>(state.rev||0)){
-          var keep=state.cloudUrl;
-          remote.cloudUrl=keep; state=remote; state.rev=rrev;
-          localStorage.setItem(KEY, JSON.stringify(state));
-          renderAll();
-          if(st) st.textContent='☁️ 最新データを取得しました（'+new Date().toLocaleTimeString('ja-JP')+'）';
-        } else if(st && force){ st.textContent='☁️ 既に最新です。'; }
+        var rrev=Number(resp.rev||0);
+        if(rrev>(state.rev||0)){
+          if(!_cloudDirty || force){
+            var remote=JSON.parse(resp.data); var keep=state.cloudUrl;
+            remote.cloudUrl=keep; state=remote; state.rev=rrev; _cloudDirty=false;
+            localStorage.setItem(KEY, JSON.stringify(state));
+            renderAll();
+            if(st) st.textContent='☁️ 最新データを取得しました（'+new Date().toLocaleTimeString('ja-JP')+'）';
+          } else {
+            state.rev=rrev; schedulePush();
+            if(st) st.textContent='☁️ 未送信の変更があるため版番号のみ同期（再送します）';
+          }
+        } else {
+          if(st && force) st.textContent='☁️ 既に最新です。';
+          else if(st && isVerify) st.textContent='☁️ 保存を確認しました（'+new Date().toLocaleTimeString('ja-JP')+'）';
+        }
       } else {
-        pushCloud();
-        if(st) st.textContent='☁️ この端末のデータでクラウド共有を開始しました。';
+        if(force){ pushCloud(true); if(st) st.textContent='☁️ この端末のデータでクラウド共有を開始しました。'; }
+        else if(st) st.textContent='⚠️ クラウドが空/読取不可（安全のため自動上書きはしません）。';
       }
     }catch(e){ if(st) st.textContent='⚠️ 取得データの解析エラー: '+String(e&&e.message||e); }
   };
-  s.onerror=function(){ clearTimeout(timer); cleanup(); if(st) st.textContent='⚠️ クラウド取得に失敗（URL/デプロイ設定/アクセス=全員 を確認）'; };
+  s.onerror=function(){ clearTimeout(timer); cleanup(); if(st&&force) st.textContent='⚠️ クラウド取得に失敗（URL/デプロイ設定/アクセス=全員 を確認）'; };
   s.src=url+(url.indexOf('?')>=0?'&':'?')+'action=load&callback='+cb+'&t='+Date.now();
   document.body.appendChild(s);
 }
@@ -1475,6 +1494,7 @@ document.getElementById('arDate').value=todayISO();
 (function(){ try{ var m=location.search.match(/[?&]cloud=([^&]+)/); if(m){ state.cloudUrl=decodeURIComponent(m[1]); localStorage.setItem(KEY, JSON.stringify(state)); } }catch(e){} })();
 renderAll();
 if(cloudEnabled()){ startCloudPoll(); pullCloud(true); }
+document.addEventListener('visibilitychange', function(){ if(!document.hidden && cloudEnabled()) pullCloud(false); });
 if(state.autoSync && state.gasArrivalUrl){ setTimeout(function(){ syncArrivalsGas(); }, 500); }
 </script>
 </body>
