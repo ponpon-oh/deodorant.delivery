@@ -1057,11 +1057,13 @@ function clearOrderGrid(){ document.querySelectorAll('#orderGrid .og').forEach(i
 function strWidth(s){ let n=0; for(const ch of String(s)){ n+=ch.charCodeAt(0)>255?2:1; } return n; }
 function buildLineMatrix(lines,date){
   const prods=[...new Set(lines.map(l=>l.sellableId))];
-  const ships=[...new Set(lines.map(l=>l.shippingId||'none'))];
+  var ships=state.shippings.map(function(s){ return s.id; });
+  var hasNone=lines.some(function(l){ return !l.shippingId || !state.shippings.some(function(x){return x.id===l.shippingId;}); });
+  if(hasNone) ships.push('none');
   const shipName=id=>id==='none'?'(未指定)':((shippingById(id)||{}).name||'-');
   const grid={};
-  lines.forEach(l=>{ const s=l.shippingId||'none'; grid[l.sellableId]=grid[l.sellableId]||{}; grid[l.sellableId][s]=(grid[l.sellableId][s]||0)+l.qty; });
-  const rows=prods.map(function(sid){ return sellableName(sid)+ships.map(function(s){ return '【'+(grid[sid][s]||0)+'】'; }).join(''); });
+  lines.forEach(function(l){ var s=(l.shippingId && state.shippings.some(function(x){return x.id===l.shippingId;}))?l.shippingId:'none'; grid[l.sellableId]=grid[l.sellableId]||{}; grid[l.sellableId][s]=(grid[l.sellableId][s]||0)+l.qty; });
+  const rows=prods.map(function(sid){ return sellableName(sid)+ships.map(function(s){ return '【'+((grid[sid]&&grid[sid][s])||0)+'】'; }).join(''); });
   const shipHeader='発送: '+ships.map(shipName).join('・');
   return '発注依頼\n日付: '+date+'\n'+shipHeader+'\n\n'+rows.join('\n');
 }
