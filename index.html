@@ -269,6 +269,7 @@
       <div class="total-note" style="margin-top:14px" id="oSummary"></div>
       <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
         <button class="btn line" onclick="saveOrderGrid()">✅ 出荷を登録してLINE送信</button>
+        <button class="btn" style="background:#e5e7eb;color:#4b5563" onclick="saveOrderGrid(true)">在庫・売上のみ登録（LINE送信なし）</button>
         <button class="btn ghost sm" onclick="clearOrderGrid()">入力をクリア</button>
       </div>
       <p class="hint" style="margin-top:8px">LINEには「発注依頼」＋日付＋「縦=商品／横=発送方法／セル=個数」の表が送られます（販路・価格は含みません）。</p>
@@ -1064,7 +1065,7 @@ function buildLineMatrix(lines,date){
   const shipHeader='発送: '+ships.map(shipName).join('・');
   return '発注依頼\n日付: '+date+'\n'+shipHeader+'\n\n'+rows.join('\n');
 }
-function saveOrderGrid(){
+function saveOrderGrid(noLine){
   const lines=readGridLines();
   if(!lines.length){ alert('出荷したいセルに個数を入力してください'); return; }
   const need={};
@@ -1091,8 +1092,12 @@ function saveOrderGrid(){
   save();
   const text=buildLineMatrix(lines,date);
   renderAll();
-  sendLine(text);
-  alert('出荷を登録しました（在庫を差し引きました）。'+((state.lineMode==='official' && (state.lineRelayUrl||'').trim())?'公式LINEへ送信しました（結果は発注画面下部に表示）。':'通常のLINEで送信画面を開きました。'));
+  if(noLine){
+    alert('出荷を登録しました（在庫・売上に反映）。LINEは送信していません。');
+  } else {
+    sendLine(text);
+    alert('出荷を登録しました（在庫を差し引きました）。'+((state.lineMode==='official' && (state.lineRelayUrl||'').trim())?'公式LINEへ送信しました（結果は発注画面下部に表示）。':'通常のLINEで送信画面を開きました。'));
+  }
 }
 function saveGasUrl(){ state.gasArrivalUrl=document.getElementById('gasUrl').value.trim(); save(); alert('保存しました。'); }
 function copyGasArr(){ const t=document.getElementById('gasArrCode').innerText; if(navigator.clipboard){ navigator.clipboard.writeText(t).then(()=>alert('コードをコピーしました')).catch(()=>alert('コピーできませんでした。手動で選択してください。')); } else alert('手動で選択してコピーしてください。'); }
