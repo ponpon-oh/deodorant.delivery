@@ -1060,14 +1060,9 @@ function buildLineMatrix(lines,date){
   const shipName=id=>id==='none'?'(未指定)':((shippingById(id)||{}).name||'-');
   const grid={};
   lines.forEach(l=>{ const s=l.shippingId||'none'; grid[l.sellableId]=grid[l.sellableId]||{}; grid[l.sellableId][s]=(grid[l.sellableId][s]||0)+l.qty; });
-  const header=['商品 \\ 発送',...ships.map(shipName)];
-  const rows=prods.map(sid=>[sellableName(sid),...ships.map(s=>{ const v=grid[sid][s]; return v?String(v):'-'; })]);
-  const all=[header,...rows];
-  const w=header.map((_,c)=>Math.max(...all.map(r=>strWidth(r[c]))));
-  const pad=(s,width)=>s+' '.repeat(Math.max(0,width-strWidth(s)));
-  const fmt=r=>r.map((c,i)=>pad(c,w[i])).join('・');
-  const sep='-'.repeat(strWidth(fmt(header)));
-  return `発注依頼\n日付: ${date}\n\n${fmt(header)}\n${sep}\n${rows.map(fmt).join('\n')}`;
+  const rows=prods.map(function(sid){ return sellableName(sid)+ships.map(function(s){ return '【'+(grid[sid][s]||0)+'】'; }).join(''); });
+  const shipHeader='発送: '+ships.map(shipName).join('・');
+  return '発注依頼\n日付: '+date+'\n'+shipHeader+'\n\n'+rows.join('\n');
 }
 function saveOrderGrid(){
   const lines=readGridLines();
