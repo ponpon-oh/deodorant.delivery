@@ -381,6 +381,8 @@
         <div style="flex:1;display:flex;align-items:flex-end;gap:6px"><button class="btn" style="flex:1" onclick="saveCloudUrl()">保存して接続</button><button class="btn sec" style="flex:1" onclick="pullCloud(true)">🔄 最新取得</button></div>
       </div>
       <p class="hint" id="cloudStatus" style="margin-top:8px"></p>
+      <div style="margin-top:6px"><button class="btn ghost sm" onclick="cloudHistory()">🕘 バックアップから復元</button></div>
+      <div id="cloudHistList" style="margin-top:6px"></div>
       <details style="margin-top:8px"><summary>▶ セットアップ手順（管理者が1回だけ・コード付き）</summary>
         <ol class="steps" style="margin-top:10px">
           <li>管理者が script.google.com で新規プロジェクトを作成し、下の「コードをコピー」で全文を貼り付け。</li>
@@ -390,36 +392,61 @@
           <li>（便利）配布リンクの末尾に <code>?cloud=（execのURL）</code> を付けておくと、開くだけで自動接続されます。例：<code>https://xxx.netlify.app/?cloud=https://script.google.com/macros/s/AAA/exec</code></li>
         </ol>
         <pre id="cloudCode" style="background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;overflow:auto;font-size:11px;white-space:pre;margin-top:8px">var FILE_NAME = 'inventory-shared-db.json';
+var HIST_NAME = 'inventory-shared-history.json';
+var HIST_MAX = 30;
 
-function _getFile(){
-  var it = DriveApp.getFilesByName(FILE_NAME);
+function _file(name, init){
+  var it = DriveApp.getFilesByName(name);
   if (it.hasNext()) return it.next();
-  return DriveApp.createFile(FILE_NAME, JSON.stringify({ rev: 0, data: '' }), MimeType.PLAIN_TEXT);
+  return DriveApp.createFile(name, init, MimeType.PLAIN_TEXT);
+}
+function _read(name, init){
+  var f = _file(name, init);
+  try { return JSON.parse(f.getBlob().getDataAsString()); } catch (e) { return JSON.parse(init); }
+}
+function _out(e, str){
+  var cb = e && e.parameter && e.parameter.callback;
+  if (cb) return ContentService.createTextOutput(cb + '(' + str + ')').setMimeType(ContentService.MimeType.JAVASCRIPT);
+  return ContentService.createTextOutput(str).setMimeType(ContentService.MimeType.JSON);
 }
 
 function doGet(e){
-  var f = _getFile();
-  var obj;
-  try { obj = JSON.parse(f.getBlob().getDataAsString()); } catch (err) { obj = { rev: 0, data: '' }; }
-  var out = JSON.stringify(obj);
-  var cb = e && e.parameter && e.parameter.callback;
-  if (cb) return ContentService.createTextOutput(cb + '(' + out + ')').setMimeType(ContentService.MimeType.JAVASCRIPT);
-  return ContentService.createTextOutput(out).setMimeType(ContentService.MimeType.JSON);
+  var action = (e && e.parameter && e.parameter.action) || 'load';
+  if (action === 'history') {
+    var h = _read(HIST_NAME, '{"list":[]}');
+    var meta = (h.list || []).map(function(x){ return { ts: x.ts, rev: x.rev }; });
+    return _out(e, JSON.stringify({ list: meta }));
+  }
+  if (action === 'restore') {
+    var ts = Number((e.parameter && e.parameter.ts) || 0);
+    var h2 = _read(HIST_NAME, '{"list":[]}');
+    var found = null;
+    (h2.list || []).forEach(function(x){ if (Number(x.ts) === ts) found = x; });
+    return _out(e, JSON.stringify({ rev: found ? found.rev : 0, data: found ? found.data : '' }));
+  }
+  return _out(e, JSON.stringify(_read(FILE_NAME, '{"rev":0,"data":""}')));
 }
 
 function doPost(e){
   var data = (e && e.parameter && e.parameter.data) || '';
   var force = (e && e.parameter && e.parameter.force) === '1';
   var baseRev = Number((e && e.parameter && e.parameter.baseRev) || 0);
-  var f = _getFile();
+  var f = _file(FILE_NAME, '{"rev":0,"data":""}');
   var cur; try { cur = JSON.parse(f.getBlob().getDataAsString()); } catch (err) { cur = { rev:0, data:'' }; }
   var curRev = Number(cur.rev || 0);
   if (force || curRev === 0 || baseRev === curRev) {
-    var newRev = Date.now(); // サーバー時計で版番号を採番（端末の時計ズレを排除）
+    var newRev = Date.now(); // サーバーで版番号を採番（端末の時計ズレを排除）
     f.setContent(JSON.stringify({ rev: newRev, data: data }));
+    // 自動バックアップ履歴（直近30版を保持）
+    var hf = _file(HIST_NAME, '{"list":[]}');
+    var h; try { h = JSON.parse(hf.getBlob().getDataAsString()); } catch (e2) { h = { list: [] }; }
+    h.list = h.list || [];
+    h.list.push({ ts: newRev, rev: newRev, data: data });
+    if (h.list.length > HIST_MAX) h.list = h.list.slice(h.list.length - HIST_MAX);
+    hf.setContent(JSON.stringify(h));
     return ContentService.createTextOutput(JSON.stringify({ ok:true, rev:newRev }));
   }
-  return ContentService.createTextOutput(JSON.stringify({ ok:false, rev:curRev })); // 古い版に基づく書込は拒否（巻き戻り防止）
+  return ContentService.createTextOutput(JSON.stringify({ ok:false, rev:curRev })); // 古い版に基づく書込は拒否
 }</pre>
         <button class="btn ghost sm" style="margin-top:6px" onclick="copyCloudCode()">コードをコピー</button>
       </details>
@@ -1381,9 +1408,42 @@ function renderAdjust(){
     : '<div class="empty">在庫調整の履歴はありません（棚卸で減らした分は出荷履歴に入ります）</div>';
 }
 /* ====== Team cloud sync (Apps Script + Drive, JSONP read / no-cors write) ====== */
-var _cloudPushTimer=null, _cloudPollStarted=false, _cloudDirty=false, _cloudVerifyTimer=null;
+var _cloudPushTimer=null, _cloudPollStarted=false, _cloudDirty=false, _cloudVerifyTimer=null, _cloudLoaded=false;
 function cloudEnabled(){ return !!(state.cloudUrl && String(state.cloudUrl).trim()); }
 function copyCloudCode(){ var t=document.getElementById('cloudCode').innerText; if(navigator.clipboard){ navigator.clipboard.writeText(t).then(function(){alert('コードをコピーしました');}).catch(function(){alert('コピーできませんでした。手動で選択してください。');}); } else alert('手動で選択してコピーしてください。'); }
+function cloudHistory(){
+  if(!cloudEnabled()){ alert('先にクラウドへ接続してください'); return; }
+  var url=state.cloudUrl, cb='__cloudh_'+Date.now()+Math.floor(Math.random()*1000), s=document.createElement('script');
+  var box=document.getElementById('cloudHistList'); if(box) box.innerHTML='読み込み中...';
+  function cleanup(){ try{delete window[cb];}catch(e){window[cb]=undefined;} if(s.parentNode)s.parentNode.removeChild(s); }
+  var timer=setTimeout(function(){ cleanup(); if(box) box.textContent='取得に時間がかかっています（バックエンド更新をご確認ください）。'; },15000);
+  window[cb]=function(resp){ clearTimeout(timer); cleanup();
+    var list=(resp&&resp.list)||[];
+    if(!list.length){ if(box) box.innerHTML='<div class="empty">バックアップがありません（新しいバックエンドに更新後、保存が行われると自動で蓄積されます）。</div>'; return; }
+    list=list.slice().reverse();
+    if(box) box.innerHTML='<div class="hint">復元したい時点を選ぶと、その状態に戻します（現在のクラウドデータは上書きされ、全端末に反映されます）。</div>'+
+      list.map(function(x){ var d=new Date(Number(x.ts)); return '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;border-bottom:1px solid var(--line);padding:5px 0"><span>'+d.toLocaleString('ja-JP')+'</span><button class="btn sec sm" onclick="cloudRestore('+x.ts+')">この時点に復元</button></div>'; }).join('');
+  };
+  s.onerror=function(){ clearTimeout(timer); cleanup(); if(box) box.textContent='取得に失敗しました（URL/デプロイ設定・バックエンド更新をご確認ください）。'; };
+  s.src=url+(url.indexOf('?')>=0?'&':'?')+'action=history&callback='+cb+'&t='+Date.now();
+  document.body.appendChild(s);
+}
+function cloudRestore(ts){
+  if(!confirm('この時点のデータに復元します。現在のクラウドデータは上書きされます。よろしいですか？')) return;
+  var url=state.cloudUrl, cb='__cloudr_'+Date.now()+Math.floor(Math.random()*1000), s=document.createElement('script');
+  var box=document.getElementById('cloudHistList'); if(box) box.textContent='復元中...';
+  function cleanup(){ try{delete window[cb];}catch(e){window[cb]=undefined;} if(s.parentNode)s.parentNode.removeChild(s); }
+  var timer=setTimeout(function(){ cleanup(); if(box) box.textContent='復元に時間がかかっています。'; },15000);
+  window[cb]=function(resp){ clearTimeout(timer); cleanup();
+    try{
+      if(resp&&resp.data){ var remote=JSON.parse(resp.data); var keep=state.cloudUrl; remote.cloudUrl=keep; state=remote; state.rev=Number(resp.rev||0); _cloudLoaded=true; _cloudDirty=false; localStorage.setItem(KEY, JSON.stringify(state)); renderAll(); pushCloud(true); if(box) box.innerHTML='<div class="pill g">復元しました。全端末に反映されます。</div>'; }
+      else { if(box) box.textContent='この時点のデータが見つかりませんでした。'; }
+    }catch(e){ if(box) box.textContent='復元エラー: '+String(e&&e.message||e); }
+  };
+  s.onerror=function(){ clearTimeout(timer); cleanup(); if(box) box.textContent='復元に失敗しました。'; };
+  s.src=url+(url.indexOf('?')>=0?'&':'?')+'action=restore&ts='+ts+'&callback='+cb+'&t='+Date.now();
+  document.body.appendChild(s);
+}
 function saveCloudUrl(){
   state.cloudUrl=document.getElementById('cloudUrl').value.trim();
   localStorage.setItem(KEY, JSON.stringify(state));
@@ -1396,6 +1456,7 @@ function schedulePush(){ if(!cloudEnabled()) return; if(_cloudPushTimer) clearTi
 function pushCloud(force){
   if(!cloudEnabled()) return;
   var st=document.getElementById('cloudStatus');
+  if(!force && !_cloudLoaded){ if(st) st.textContent='⏳ クラウド読込の完了前のため保存を保留（データ保護のため）'; return; }
   var base = force ? 'force=1' : ('baseRev='+(state.rev||0));
   var body='action=save&'+base+'&data='+encodeURIComponent(JSON.stringify(state));
   _cloudDirty=false;
@@ -1414,7 +1475,7 @@ function pullCloud(force, isVerify){
   var timer=setTimeout(function(){ cleanup(); if(st&&force) st.textContent='⚠️ クラウド取得に時間がかかっています（URL/デプロイ設定を確認）'; }, 15000);
   window[cb]=function(resp){ clearTimeout(timer); cleanup();
     try{
-      if(resp && resp.data){
+      if(resp && resp.data){ _cloudLoaded=true;
         var rrev=Number(resp.rev||0);
         if(rrev>(state.rev||0)){
           if(!_cloudDirty || force){
@@ -1432,7 +1493,7 @@ function pullCloud(force, isVerify){
           else if(st && isVerify) st.textContent='☁️ 保存を確認しました（'+new Date().toLocaleTimeString('ja-JP')+'）';
         }
       } else {
-        if(force){ pushCloud(true); if(st) st.textContent='☁️ この端末のデータでクラウド共有を開始しました。'; }
+        if(force){ _cloudLoaded=true; pushCloud(true); if(st) st.textContent='☁️ この端末のデータでクラウド共有を開始しました。'; }
         else if(st) st.textContent='⚠️ クラウドが空/読取不可（安全のため自動上書きはしません）。';
       }
     }catch(e){ if(st) st.textContent='⚠️ 取得データの解析エラー: '+String(e&&e.message||e); }
