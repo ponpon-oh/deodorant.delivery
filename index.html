@@ -95,6 +95,14 @@
   }
 .mig{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-family:ui-monospace,Consolas,monospace;font-size:12px}
   .migbtn{margin-top:8px}
+  .stepper{display:inline-flex;align-items:stretch}
+  .stepper button{width:30px;min-width:30px;height:36px;border:1px solid var(--line);background:#f3f4f6;font-size:18px;font-weight:700;cursor:pointer;color:var(--ink);line-height:1;padding:0}
+  .stepper button:active{background:#e5e7eb}
+  .stepper button:first-child{border-radius:6px 0 0 6px}
+  .stepper button:last-child{border-radius:0 6px 6px 0}
+  .stepper input.og{width:42px !important;text-align:center;border-radius:0;border-left:0;border-right:0;height:36px;-moz-appearance:textfield}
+  .stepper input.og::-webkit-outer-spin-button,.stepper input.og::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+  @media(max-width:640px){ .stepper button{width:34px;min-width:34px;height:40px} .stepper input.og{width:46px !important;height:40px} }
 </style>
 </head>
 <body>
@@ -1043,9 +1051,9 @@ function renderOrderGrid(){
   function row(s, cls){ const avail=sellableAvailable(s);
     return `<tr class="${cls}" ${cls==='ogset'?'style="display:none"':''}><td class="name">${esc(s.name)}${s.type==='set'?' <span class="pill b">セット</span>':''}</td>
       <td class="num" id="av_${s.id}">${isFinite(avail)?avail:0}</td>
-      ${state.channels.map(c=>`<td><input type="number" min="0" class="og" data-sid="${s.id}" data-cid="${c.id}" placeholder="0" oninput="updateOrderGrid()"></td>`).join('')}</tr>`; }
+      ${state.channels.map(c=>`<td><div class="stepper"><button type="button" tabindex="-1" onclick="ogStep(this,-1)">−</button><input type="number" min="0" class="og" data-sid="${s.id}" data-cid="${c.id}" placeholder="0" inputmode="numeric" oninput="updateOrderGrid()"><button type="button" tabindex="-1" onclick="ogStep(this,1)">＋</button></div></td>`).join('')}</tr>`; }
   const colspan=2+state.channels.length;
-  el.innerHTML=`<table class="grid-tbl" style="min-width:${150+state.channels.length*96}px"><thead><tr>
+  el.innerHTML=`<table class="grid-tbl" style="min-width:${170+state.channels.length*120}px"><thead><tr>
     <th class="name">販売単位</th><th class="num">在庫</th>${state.channels.map(c=>`<th>${esc(c.name)}</th>`).join('')}</tr></thead>
     <tbody>${prods.map(function(s){return row(s,'');}).join('')}${sets.length?`<tr class="setToggleRow" onclick="toggleGridSets()"><td colspan="${colspan}" style="cursor:pointer;background:#eef2ff;color:var(--brand);font-weight:700;text-align:left">▸ セット商品（${sets.length}）　タップで表示/非表示</td></tr>`:''}${sets.map(function(s){return row(s,'ogset');}).join('')}</tbody></table>`;
   updateOrderGrid();
@@ -1068,6 +1076,7 @@ function readGridLines(){
   });
   return lines;
 }
+function ogStep(btn, delta){ var inp=btn.parentNode.querySelector("input.og"); if(!inp) return; var v=(parseInt(inp.value)||0)+delta; if(v<0)v=0; inp.value=v>0?v:""; updateOrderGrid(); }
 function updateOrderGrid(){
   const lines=readGridLines();
   const need={};
